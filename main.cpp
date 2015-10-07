@@ -93,7 +93,7 @@ int main(int argc, char **argv)
     checkCudaErrors(cudaMemcpy(h_DstKey, d_DstKey, N * sizeof(uint), cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemcpy(h_DstVal, d_DstVal, N * sizeof(uint), cudaMemcpyDeviceToHost));
 
-    printf("Inspecting the results...\n");
+    /*printf("Inspecting the results...\n");
     uint keysFlag = validateSortedKeys(
                         h_DstKey,
                         h_SrcKey,
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
                           1,
                           N
                       );
-
+    */
     printf("Shutting down...\n");
     closeMergeSort();
     sdkDeleteTimer(&hTimer);
@@ -132,5 +132,5 @@ int main(int argc, char **argv)
     // flushed before the application exits
     cudaDeviceReset();
 
-    exit((keysFlag && valuesFlag) ? EXIT_SUCCESS : EXIT_FAILURE);
+    //exit((keysFlag && valuesFlag) ? EXIT_SUCCESS : EXIT_FAILURE);
 }

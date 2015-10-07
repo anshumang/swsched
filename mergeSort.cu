@@ -176,17 +176,117 @@ static void mergeSortShared(
 
     if (sortDir)
     {
+	struct timeval start, end;
+	gettimeofday(&start, NULL);
         mergeSortSharedKernel<1U><<<blockCount, threadCount>>>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength);
+	cudaDeviceSynchronize();
+	gettimeofday(&end, NULL);
+	std::cerr << "mergeSortShared " << blockCount << " " << threadCount << " " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
         getLastCudaError("mergeSortShared<1><<<>>> failed\n");
     }
     else
     {
         mergeSortSharedKernel<0U><<<blockCount, threadCount>>>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength);
-        getLastCudaError("mergeSortShared<0><<<>>> failed\n");
+        //getLastCudaError("mergeSortShared<0><<<>>> failed\n");
     }
 }
 
+template<uint sortDir> __device__ void mergeSortSharedKernel_minion(
+    uint *d_DstKey,
+    uint *d_DstVal,
+    uint *d_SrcKey,
+    uint *d_SrcVal,
+    uint arrayLength
+)
+{
+    __shared__ uint s_key[SHARED_SIZE_LIMIT];
+    __shared__ uint s_val[SHARED_SIZE_LIMIT];
 
+    d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    d_DstVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
+    s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
+    s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
+    s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
+
+    for (uint stride = 1; stride < arrayLength; stride <<= 1)
+    {
+        uint     lPos = threadIdx.x & (stride - 1);
+        uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
+        uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
+
+        __syncthreads();
+        uint keyA = baseKey[lPos +      0];
+        uint valA = baseVal[lPos +      0];
+        uint keyB = baseKey[lPos + stride];
+        uint valB = baseVal[lPos + stride];
+        uint posA = binarySearchExclusive<sortDir>(keyA, baseKey + stride, stride, stride) + lPos;
+        uint posB = binarySearchInclusive<sortDir>(keyB, baseKey +      0, stride, stride) + lPos;
+
+        __syncthreads();
+        baseKey[posA] = keyA;
+        baseVal[posA] = valA;
+        baseKey[posB] = keyB;
+        baseVal[posB] = valB;
+    }
+
+    __syncthreads();
+    d_DstKey[                      0] = s_key[threadIdx.x +                       0];
+    d_DstVal[                      0] = s_val[threadIdx.x +                       0];
+    d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+}
+
+__device__ uint d_d2h_flag=0;
+__device__ uint d_num_blocks_completed=0;
+__device__ uint d_h2d_flag=0;
+
+__global__ void super_kernel(
+    uint *d_cm_flag,
+    uint *d_DstKey,
+    uint *d_DstVal,
+    uint *d_SrcKey,
+    uint *d_SrcVal,
+    uint arrayLength)
+{
+     long long int l_timestamp = 0;
+     if((threadIdx.x==0)&&(blockIdx.x==0))
+     {
+        l_timestamp = clock64();
+        uint l_h2d_flag=0;
+        do
+        {
+           //l_h2d_flag = atomicExch(&d_h2d_flag, 0);   
+           //l_h2d_flag = d_h2d_flag;
+           l_h2d_flag = *d_cm_flag;
+           __threadfence_system();
+        }while(l_h2d_flag==0);
+        printf("%ld %ld\n", l_timestamp, clock64());
+     }
+     __syncthreads();
+     /*if(threadIdx.x==0)
+     {
+        printf("%d %ld\n", blockIdx.x, clock64());
+     }*/
+     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength);
+     __syncthreads();
+     if(threadIdx.x==0)
+     {
+         atomicAdd(&d_num_blocks_completed, 1);
+     }
+     if((threadIdx.x==0)&&(blockIdx.x==0))
+     {
+         int l_num_blocks_completed;
+         do
+         {
+           l_num_blocks_completed = atomicCAS(&d_num_blocks_completed, gridDim.x-1 ,0);
+         }while(l_num_blocks_completed!=gridDim.x-1);
+         atomicExch(&d_d2h_flag, 1);
+         printf("%ld \n", clock64());
+     }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Merge step 1: generate sample ranks
@@ -579,6 +679,7 @@ extern "C" void initMergeSort(void)
     checkCudaErrors(cudaMalloc((void **)&d_RanksB,  MAX_SAMPLE_COUNT * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&d_LimitsA, MAX_SAMPLE_COUNT * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&d_LimitsB, MAX_SAMPLE_COUNT * sizeof(uint)));
+
 }
 
 extern "C" void closeMergeSort(void)
@@ -587,6 +688,7 @@ extern "C" void closeMergeSort(void)
     checkCudaErrors(cudaFree(d_RanksB));
     checkCudaErrors(cudaFree(d_LimitsB));
     checkCudaErrors(cudaFree(d_LimitsA));
+
 }
 
 extern "C" void mergeSort(
@@ -624,7 +726,34 @@ extern "C" void mergeSort(
     assert(N <= (SAMPLE_STRIDE * MAX_SAMPLE_COUNT));
     assert(N % SHARED_SIZE_LIMIT == 0);
     mergeSortShared(ikey, ival, d_SrcKey, d_SrcVal, N / SHARED_SIZE_LIMIT, SHARED_SIZE_LIMIT, sortDir);
+    uint *d_cm_flag=NULL;
+    cudaMalloc(&d_cm_flag, sizeof(uint));
 
+    cudaStream_t k_strm;
+    cudaStreamCreateWithFlags(&k_strm, cudaStreamNonBlocking);
+    
+    uint l_h2d_flag=1;
+    struct timeval start, end;
+
+    gettimeofday(&start, NULL);
+    cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    gettimeofday(&end, NULL);
+    std::cerr << "H2D Flag write pre " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+    
+    gettimeofday(&start, NULL);
+    //super_kernel<<</*192*15*/512*32, 512/*64*/>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    super_kernel<<</*192*15*/512*32, 512/*64*/, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    //cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    std::cerr << "super_kernel " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+
+    /*gettimeofday(&start, NULL);
+    cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    gettimeofday(&end, NULL);
+    std::cerr << "H2D Flag write post " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+    */
+    
+#if 0
     for (uint stride = SHARED_SIZE_LIMIT; stride < N; stride <<= 1)
     {
         uint lastSegmentElements = N % (2 * stride);
@@ -653,5 +782,6 @@ extern "C" void mergeSort(
         ival = oval;
         oval = t;
     }
+#endif
 }
 
