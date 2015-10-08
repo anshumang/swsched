@@ -241,6 +241,7 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion(
 
 __device__ uint d_d2h_flag=0;
 __device__ uint d_num_blocks_completed=0;
+__device__ uint d_num_blocks_started=0;
 __device__ uint d_h2d_flag=0;
 
 __global__ void super_kernel(
@@ -252,31 +253,57 @@ __global__ void super_kernel(
     uint arrayLength)
 {
      long long int l_timestamp = 0;
-     if((threadIdx.x==0)&&(blockIdx.x==0))
+     unsigned int smidx, warpidx;
+     /*if((blockIdx.x==0)||(blockIdx.x==15)||(blockIdx.x==30)||(blockIdx.x==45)||(blockIdx.x==60))
      {
+       asm("mov.u32 %0, %%smid;" : "=r"(smidx));
+       asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
+       l_timestamp = clock64();
+       //printf("%d %d %d %d %ld\n",smidx, warpidx, gridDim.x, blockDim.x, l_timestamp);
+       printf("%d %d %d %d %d %d %ld\n",threadIdx.x, blockIdx.x, smidx, warpidx, gridDim.x, blockDim.x, l_timestamp);
+     }*/
+     if(threadIdx.x==0)
+     {
+        asm("mov.u32 %0, %%smid;" : "=r"(smidx));
+        asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
         l_timestamp = clock64();
+        /*if(blockIdx.x%60==0)
+        {
+          printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
+        }*/
         uint l_h2d_flag=0;
         do
         {
-           //l_h2d_flag = atomicExch(&d_h2d_flag, 0);   
-           //l_h2d_flag = d_h2d_flag;
            l_h2d_flag = *d_cm_flag;
            __threadfence_system();
         }while(l_h2d_flag==0);
-        printf("%ld %ld\n", l_timestamp, clock64());
+        //if(blockIdx.x%60==0)
+        //{
+          //printf("start %d %d %d %ld %ld\n", blockIdx.x, smidx, warpidx, l_timestamp, clock64());
+        //}
+        if(d_num_blocks_started == 0)
+        {
+            printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
+        }
+        atomicAdd(&d_num_blocks_started, 1);
      }
      __syncthreads();
-     /*if(threadIdx.x==0)
-     {
-        printf("%d %ld\n", blockIdx.x, clock64());
-     }*/
      mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength);
      __syncthreads();
+     //if(threadIdx.x==0)
+     //{
+        //l_timestamp = clock64();
+        //printf("end %d %d %ld\n", r, blockIdx.x, l_timestamp);
+     //}
      if(threadIdx.x==0)
      {
          atomicAdd(&d_num_blocks_completed, 1);
+         if(d_num_blocks_completed==gridDim.x)
+         {
+             printf("end %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
+         }
      }
-     if((threadIdx.x==0)&&(blockIdx.x==0))
+     /*if((threadIdx.x==0)&&(blockIdx.x==0))
      {
          int l_num_blocks_completed;
          do
@@ -285,7 +312,7 @@ __global__ void super_kernel(
          }while(l_num_blocks_completed!=gridDim.x-1);
          atomicExch(&d_d2h_flag, 1);
          printf("%ld \n", clock64());
-     }
+     }*/
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -735,23 +762,23 @@ extern "C" void mergeSort(
     uint l_h2d_flag=1;
     struct timeval start, end;
 
-    gettimeofday(&start, NULL);
+    /*gettimeofday(&start, NULL);
     cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
     gettimeofday(&end, NULL);
-    std::cerr << "H2D Flag write pre " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+    std::cerr << "H2D Flag write pre " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;*/
     
     gettimeofday(&start, NULL);
     //super_kernel<<</*192*15*/512*32, 512/*64*/>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
-    super_kernel<<</*192*15*/512*32, 512/*64*/, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    super_kernel<<<16384, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
     //cudaDeviceSynchronize();
     gettimeofday(&end, NULL);
     std::cerr << "super_kernel " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
-    /*gettimeofday(&start, NULL);
+    gettimeofday(&start, NULL);
     cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
     gettimeofday(&end, NULL);
     std::cerr << "H2D Flag write post " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
-    */
+    
     
 #if 0
     for (uint stride = SHARED_SIZE_LIMIT; stride < N; stride <<= 1)
