@@ -243,6 +243,7 @@ __device__ uint d_d2h_flag=0;
 __device__ uint d_num_blocks_completed=0;
 __device__ uint d_num_blocks_started=0;
 __device__ uint d_h2d_flag=0;
+__device__ long d_grid_size=60;
 
 __global__ void super_kernel(
     uint *d_cm_flag,
@@ -277,14 +278,23 @@ __global__ void super_kernel(
            l_h2d_flag = *d_cm_flag;
            __threadfence_system();
         }while(l_h2d_flag==0);
+      }
+     __syncthreads();
+     __shared__ bool s_grid_done;
+     int iter=273, iter_completed=0;
+    while(iter_completed<273){
+     if(threadIdx.x==0)
+     {
+	s_grid_done=false;
         //if(blockIdx.x%60==0)
         //{
           //printf("start %d %d %d %ld %ld\n", blockIdx.x, smidx, warpidx, l_timestamp, clock64());
         //}
-        if(d_num_blocks_started == 0)
+        //if(d_num_blocks_started == 0)
+        /*if((blockIdx.x==0)&&(iter_completed==0))
         {
             printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
-        }
+        }*/
         atomicAdd(&d_num_blocks_started, 1);
      }
      __syncthreads();
@@ -295,14 +305,24 @@ __global__ void super_kernel(
         //l_timestamp = clock64();
         //printf("end %d %d %ld\n", r, blockIdx.x, l_timestamp);
      //}
+     iter_completed++;
      if(threadIdx.x==0)
      {
          atomicAdd(&d_num_blocks_completed, 1);
-         if(d_num_blocks_completed==gridDim.x)
+         //if(d_num_blocks_completed==gridDim.x)
+         //if(d_num_blocks_completed==d_grid_size)
+         //if(iter_completed==273)
+         if((blockIdx.x==0)&&(iter_completed==273))
          {
-             printf("end %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
+             s_grid_done=true;
+             //printf("end %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
          }
      }
+     __syncthreads();
+     /*if(s_grid_done==true){
+       break;
+     }*/
+    }
      /*if((threadIdx.x==0)&&(blockIdx.x==0))
      {
          int l_num_blocks_completed;
@@ -756,8 +776,15 @@ extern "C" void mergeSort(
     uint *d_cm_flag=NULL;
     cudaMalloc(&d_cm_flag, sizeof(uint));
 
+    cudaError_t k_err;
     cudaStream_t k_strm;
-    cudaStreamCreateWithFlags(&k_strm, cudaStreamNonBlocking);
+    k_err = cudaStreamCreateWithFlags(&k_strm, cudaStreamNonBlocking);
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaStreamCreateWithFlags failed with error " << k_err << std::endl;}
+    cudaEvent_t k_ev;
+    cudaEventCreateWithFlags(&k_ev, cudaEventBlockingSync);
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaEventCreateWithFlags failed with error " << k_err << std::endl;}
     
     uint l_h2d_flag=1;
     struct timeval start, end;
@@ -769,16 +796,28 @@ extern "C" void mergeSort(
     
     gettimeofday(&start, NULL);
     //super_kernel<<</*192*15*/512*32, 512/*64*/>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
-    super_kernel<<<16384, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    //super_kernel<<<16384, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    super_kernel<<<60, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    k_err = cudaEventRecord(k_ev, k_strm);
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaEventRecord failed with error " << k_err << std::endl;}
     //cudaDeviceSynchronize();
     gettimeofday(&end, NULL);
-    std::cerr << "super_kernel " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+    std::cerr << "super_kernel+event submitted " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
     gettimeofday(&start, NULL);
-    cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    k_err = cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    if(k_err != cudaSuccess){
+       std::cerr << "cudaMemcpy failed with error " << k_err << std::endl;}
     gettimeofday(&end, NULL);
     std::cerr << "H2D Flag write post " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
-    
+
+    gettimeofday(&start, NULL);
+    k_err = cudaEventSynchronize(k_ev);
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaEventSynchronize failed with error " << k_err << std::endl;}
+    gettimeofday(&end, NULL);
+    std::cerr << "super_kernel completed " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
     
 #if 0
     for (uint stride = SHARED_SIZE_LIMIT; stride < N; stride <<= 1)
