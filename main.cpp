@@ -28,22 +28,22 @@ int main(int argc, char **argv)
     uint *h_SrcKey, *h_SrcVal, *h_DstKey, *h_DstVal;
     uint *d_SrcKey, *d_SrcVal, *d_BufKey, *d_BufVal, *d_DstKey, *d_DstVal;
     StopWatchInterface *hTimer = NULL;
+    sdkCreateTimer(&hTimer);
 
-    const uint   N = 16 * 1024 * 1024; //4 * 1048576;
+    const uint   N =  256 * 1024 * 1024; //4 * 1048576;
     const uint DIR = 1;
     const uint numValues = 65536;
 
-    printf("%s Starting...\n\n", argv[0]);
+    /*printf("%s Starting...\n\n", argv[0]);
 
     int dev = findCudaDevice(argc, (const char **) argv);
 
     if (dev == -1)
     {
         return EXIT_FAILURE;
-    }
+    }*/
 
     printf("Allocating and initializing host arrays...\n\n");
-    sdkCreateTimer(&hTimer);
     h_SrcKey = (uint *)malloc(N * sizeof(uint));
     h_SrcVal = (uint *)malloc(N * sizeof(uint));
     h_DstKey = (uint *)malloc(N * sizeof(uint));
@@ -72,6 +72,7 @@ int main(int argc, char **argv)
     initMergeSort();
 
     printf("Running GPU merge sort...\n");
+    for(int i=0;i<1;i++){
     checkCudaErrors(cudaDeviceSynchronize());
     sdkResetTimer(&hTimer);
     sdkStartTimer(&hTimer);
@@ -88,10 +89,11 @@ int main(int argc, char **argv)
     checkCudaErrors(cudaDeviceSynchronize());
     sdkStopTimer(&hTimer);
     printf("Time: %f ms\n", sdkGetTimerValue(&hTimer));
-
-    printf("Reading back GPU merge sort results...\n");
+    }
+    /*printf("Reading back GPU merge sort results...\n");
     checkCudaErrors(cudaMemcpy(h_DstKey, d_DstKey, N * sizeof(uint), cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemcpy(h_DstVal, d_DstVal, N * sizeof(uint), cudaMemcpyDeviceToHost));
+    */
 
     /*printf("Inspecting the results...\n");
     uint keysFlag = validateSortedKeys(
@@ -120,11 +122,11 @@ int main(int argc, char **argv)
     checkCudaErrors(cudaFree(d_BufKey));
     checkCudaErrors(cudaFree(d_DstVal));
     checkCudaErrors(cudaFree(d_DstKey));
-    free(h_DstVal);
+    /*free(h_DstVal);
     free(h_DstKey);
     free(h_SrcVal);
     free(h_SrcKey);
-
+    */
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
     // needed to ensure correct operation when the application is being
