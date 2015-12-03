@@ -178,10 +178,10 @@ static void mergeSortShared(
     {
 	    cudaError_t k_err;
 	    int num_blocks=0;
-	    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeSortSharedKernel<1U>, threadCount, 0); 
+	    /*k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeSortSharedKernel<1U>, threadCount, 0); 
 	    if(k_err != cudaSuccess){
 		    std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
-	    std::cerr << "mergeSortSharedKernel occ " << num_blocks << std::endl;
+	    std::cerr << "mergeSortSharedKernel occ " << num_blocks << std::endl;*/
 	struct timeval start, end;
 	gettimeofday(&start, NULL);
         mergeSortSharedKernel<1U><<<blockCount, threadCount>>>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength);
@@ -203,13 +203,18 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion(
     uint *d_SrcKey,
     uint *d_SrcVal,
     uint arrayLength,
-    uint num_iter
+    uint num_iter,
+    bool partial_dispatch
 )
 {
     __shared__ uint s_key[SHARED_SIZE_LIMIT];
     __shared__ uint s_val[SHARED_SIZE_LIMIT];
 
-    size_t new_block_idx_x = blockIdx.x + num_iter*60;
+    uint extra_iter=0;
+    if(partial_dispatch){
+       extra_iter=1;
+    }
+    size_t new_block_idx_x = blockIdx.x + num_iter*60 + extra_iter;
     //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
@@ -299,8 +304,8 @@ __global__ void super_kernel(
          if(blockIdx.x>=4){ /*4 blocks remaining, so use block indices 0-3, that is, choose 1 block each from 4 SMs (ALTERNATIVE : choose all 4 block indices from 1 SM)*/
             break;
          }
-         if(threadIdx.x==0){
-         printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
+         //if(threadIdx.x==0){
+         //printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
      }
      if(threadIdx.x==0)
      {
@@ -317,7 +322,11 @@ __global__ void super_kernel(
         atomicAdd(&d_num_blocks_started, 1);
      }
      __syncthreads();
-     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed);
+     if(iter_completed<4369){
+     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed,false);
+     }else{
+     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed,true);
+     }
      __syncthreads();
      //if(threadIdx.x==0)
      //{
@@ -365,34 +374,54 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_bloc
     uint factor
 )
 {
-    __shared__ uint s_key[SHARED_SIZE_LIMIT];
-    __shared__ uint s_val[SHARED_SIZE_LIMIT];
+    //__shared__ uint s_key[SHARED_SIZE_LIMIT];
+    //__shared__ uint s_val[SHARED_SIZE_LIMIT];
+
+    uint new_shared_size_limit = SHARED_SIZE_LIMIT/4;
+    __shared__ uint s_key[new_shared_size_limit];
+    __shared__ uint s_val[new_shared_size_limit];
 
     uint extra_iter=0;
     if(partial_dispatch){
        extra_iter=1;
     }
-    size_t new_block_idx_x = blockIdx.x + num_iter*60 + extra_iter;
-    size_t new_thread_idx_x = threadIdx.x*factor; //when supervisor block smaller than app block
+    //blockIdx.x%15 => super kernel blocks 0, 15, 30, 45, 60 - all belong to the same application kernel block
+    //but only need 4 super kernel blocks for this application kernel
+    //To use the 5th block, some application kernel blocks will span across multiple SMs
+    //adds complexity for syncthreads
+    //so the 5th block on each SM is left unused
+    if(blockIdx.x>=60){
+	    return;
+    }
+    size_t new_block_idx_x = blockIdx.x%15 + num_iter*15 + extra_iter;
+    size_t new_thread_idx_x = threadIdx.x + blockDim.x*factor; //when supervisor block smaller than app block
     //threadIdx.x%factor; // when app block smaller than supervisor block  
     //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_SrcKey += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_SrcVal += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_DstKey += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_DstVal += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
-    s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
-    s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
-    s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
+    d_SrcKey += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
+    d_SrcVal += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
+    d_DstKey += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
+    d_DstVal += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
+    //s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
+    //s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
+    //s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
+    //s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
+
+    s_key[new_thread_idx_x +                       0] = d_SrcKey[                      0];
+    s_val[new_thread_idx_x +                       0] = d_SrcVal[                      0];
+    s_key[new_thread_idx_x + (new_shared_size_limit / 2)] = d_SrcKey[(new_shared_size_limit / 2)];
+    s_val[new_thread_idx_x + (new_shared_size_limit / 2)] = d_SrcVal[(new_shared_size_limit / 2)];
 
     for (uint stride = 1; stride < arrayLength; stride <<= 1)
     {
-        uint     lPos = threadIdx.x & (stride - 1);
-        uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
-        uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
+        //uint     lPos = threadIdx.x & (stride - 1);
+        //uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
+        //uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
+        uint     lPos = new_thread_idx_x & (stride - 1);
+        uint *baseKey = s_key + 2 * (new_thread_idx_x - lPos);
+        uint *baseVal = s_val + 2 * (new_thread_idx_x - lPos);
 
         __syncthreads();
         uint keyA = baseKey[lPos +      0];
@@ -410,10 +439,14 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_bloc
     }
 
     __syncthreads();
-    d_DstKey[                      0] = s_key[threadIdx.x +                       0];
-    d_DstVal[                      0] = s_val[threadIdx.x +                       0];
-    d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
-    d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    //d_DstKey[                      0] = s_key[threadIdx.x +                       0];
+    //d_DstVal[                      0] = s_val[threadIdx.x +                       0];
+    //d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    //d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    d_DstKey[                      0] = s_key[new_thread_idx_x +                       0];
+    d_DstVal[                      0] = s_val[new_thread_idx_x +                       0];
+    d_DstKey[(new_shared_size_limit / 2)] = s_key[new_thread_idx_x + (new_shared_size_limit / 2)];
+    d_DstVal[(new_shared_size_limit / 2)] = s_val[new_thread_idx_x + (new_shared_size_limit / 2)];
 }
 
 __global__ void super_kernel_elastic_blockDim(
@@ -438,7 +471,7 @@ __global__ void super_kernel_elastic_blockDim(
      {
         asm("mov.u32 %0, %%smid;" : "=r"(smidx));
         asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
-        l_timestamp = clock64();
+        //l_timestamp = clock64();
         /*if(blockIdx.x%60==0)
         {
           printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
@@ -452,8 +485,15 @@ __global__ void super_kernel_elastic_blockDim(
       }
      __syncthreads();
      __shared__ bool s_grid_done;
-     int iter=4369/*273*/, iter_completed=0;
-    while(iter_completed<4369/*273*/){
+     int iter=17477/*273*/, iter_completed=0;
+    while(iter_completed<17477/*273*/){
+     if(iter_completed==17476){
+         if(blockIdx.x>=49){ /*4 application kernel blocks left, so 16 super kernel blocks or 4 SMs each with 4 blocks, RR assignment, 15 SMs need to be assigned 3 each and 4 SMs need to be assigned 1 more each*/
+            break;
+         }
+         //if(threadIdx.x==0){
+         //printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
+     }
      if(threadIdx.x==0)
      {
 	s_grid_done=false;
@@ -469,7 +509,11 @@ __global__ void super_kernel_elastic_blockDim(
         atomicAdd(&d_num_blocks_started, 1);
      }
      __syncthreads();
-     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, false, 1);
+     if(iter_completed<4369){
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, false, blockIdx.x/15);
+     }else{
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, true, blockIdx.x/15);
+     }
      __syncthreads();
      //if(threadIdx.x==0)
      //{
@@ -571,10 +615,10 @@ static void generateSampleRanks(
     {
 	    cudaError_t k_err;
 	    int num_blocks=0;
-	    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, generateSampleRanksKernel<1U>, 256, 0); 
+	    /*k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, generateSampleRanksKernel<1U>, 256, 0); 
 	    if(k_err != cudaSuccess){
 		    std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
-	    std::cerr << "generateSampleRanksKernel occ " << num_blocks << std::endl;
+	    std::cerr << "generateSampleRanksKernel occ " << num_blocks << std::endl;*/
         struct timeval start, end;
         gettimeofday(&start, NULL);
         generateSampleRanksKernel<1U><<<iDivUp(threadCount, 256), 256>>>(d_RanksA, d_RanksB, d_SrcKey, stride, N, threadCount);
@@ -652,10 +696,10 @@ static void mergeRanksAndIndices(
 
 	    cudaError_t k_err;
 	    int num_blocks=0;
-	    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeRanksAndIndicesKernel, 256, 0); 
+	    /*k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeRanksAndIndicesKernel, 256, 0); 
 	    if(k_err != cudaSuccess){
 		    std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
-	    std::cerr << "mergeRanksAndIndicesKernel occ " << num_blocks << std::endl;
+	    std::cerr << "mergeRanksAndIndicesKernel occ " << num_blocks << std::endl;*/
     struct timeval start, end;
     gettimeofday(&start, NULL);
     mergeRanksAndIndicesKernel<<<iDivUp(threadCount, 256), 256>>>(
@@ -838,10 +882,10 @@ static void mergeElementaryIntervals(
     {
 	    cudaError_t k_err;
 	    int num_blocks=0;
-	    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeElementaryIntervalsKernel<1U>, SAMPLE_STRIDE, 0); 
+	    /*k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, mergeElementaryIntervalsKernel<1U>, SAMPLE_STRIDE, 0); 
 	    if(k_err != cudaSuccess){
 		    std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
-	    std::cerr << "mergeElementaryIntervalsKernel occ " << num_blocks << std::endl;
+	    std::cerr << "mergeElementaryIntervalsKernel occ " << num_blocks << std::endl;*/
         struct timeval start, end;
         gettimeofday(&start, NULL);
         mergeElementaryIntervalsKernel<1U><<<mergePairs, SAMPLE_STRIDE>>>(
@@ -962,6 +1006,7 @@ extern "C" void mergeSort(
     assert(N <= (SAMPLE_STRIDE * MAX_SAMPLE_COUNT));
     assert(N % SHARED_SIZE_LIMIT == 0);
     struct timeval start, end;
+#if 0
     int in_zero_keys=0, in_non_zero_keys=0, in_zero_vals=0, in_non_zero_vals=0, out_zero_keys=0, out_non_zero_keys=0, out_zero_vals=0, out_non_zero_vals=0;
     uint *h_key1, *h_val1, *h_key2, *h_val2, *h_key3, *h_val3;
     h_key1 = (uint *)calloc(N, sizeof(uint));
@@ -1001,8 +1046,15 @@ extern "C" void mergeSort(
     std::cerr << "Output vs Input inspection " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
     std::cerr << in_zero_keys << " " << in_non_zero_keys << " " << in_zero_vals << " " << in_non_zero_vals << std::endl;
     std::cerr << out_zero_keys << " " << out_non_zero_keys << " " << out_zero_vals << " " << out_non_zero_vals << std::endl;
+#endif
+    /*gettimeofday(&start, NULL);
+    checkCudaErrors(cudaMemset(ikey, 0, N*sizeof(uint)));
+    checkCudaErrors(cudaMemset(ival, 0, N*sizeof(uint)));
+    gettimeofday(&end, NULL);
+    std::cerr << "Zero memory " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;*/
 
     mergeSortShared(ikey, ival, d_SrcKey, d_SrcVal, N / SHARED_SIZE_LIMIT, SHARED_SIZE_LIMIT, sortDir);
+#if 0
     gettimeofday(&start, NULL);
     checkCudaErrors(cudaMemcpy(h_key1, ikey, N*sizeof(uint), cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemcpy(h_val1, ival, N*sizeof(uint), cudaMemcpyDeviceToHost));
@@ -1023,14 +1075,22 @@ extern "C" void mergeSort(
       }
     }
     std::cerr << out_zero_keys << " " << out_non_zero_keys << " " << out_zero_vals << " " << out_non_zero_vals << std::endl;
-
-    checkCudaErrors(cudaMemset(ikey, 0, N*sizeof(uint)));
-    checkCudaErrors(cudaMemset(ival, 0, N*sizeof(uint)));
+#endif
+#if 0
+    cudaError_t k_err;
+    int num_blocks=0;
+    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, super_kernel, 512, 0); 
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
+    std::cerr << "super_kernel occ " << num_blocks << std::endl;
+    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, super_kernel_elastic_blockDim, 128, 0); 
+    if(k_err != cudaSuccess){
+      std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
+    std::cerr << "super_kernel_elastic_blockDim occ " << num_blocks << std::endl;
 
     uint *d_cm_flag=NULL;
     cudaMalloc(&d_cm_flag, sizeof(uint));
 
-    cudaError_t k_err;
     cudaStream_t k_strm;
     k_err = cudaStreamCreateWithFlags(&k_strm, cudaStreamNonBlocking);
     if(k_err != cudaSuccess){
@@ -1039,18 +1099,26 @@ extern "C" void mergeSort(
     cudaEventCreateWithFlags(&k_ev, cudaEventBlockingSync);
     if(k_err != cudaSuccess){
       std::cerr << "cudaEventCreateWithFlags failed with error " << k_err << std::endl;}
-    
-    uint l_h2d_flag=1;
+
+    gettimeofday(&start, NULL);
+    checkCudaErrors(cudaMemset(ikey, 0, N*sizeof(uint)));
+    checkCudaErrors(cudaMemset(ival, 0, N*sizeof(uint)));
+    gettimeofday(&end, NULL);
+    std::cerr << "Zero memory " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+
+    uint l_h2d_flag;
+    gettimeofday(&start, NULL);
+    l_h2d_flag=0;
+    k_err = cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    if(k_err != cudaSuccess){
+       std::cerr << "cudaMemcpy failed with error " << k_err << std::endl;}
+    gettimeofday(&end, NULL);
+    std::cerr << "H2D Flag reset " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
     /*gettimeofday(&start, NULL);
     cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
     gettimeofday(&end, NULL);
     std::cerr << "H2D Flag write pre " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;*/
-    int num_blocks=0;
-    k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, super_kernel, 512, 0); 
-    if(k_err != cudaSuccess){
-      std::cerr << "cudaOccupancyMaxActiveBlocksPerMultiprocessor failed with error " << k_err << std::endl;}
-    std::cerr << "super_kernel occ " << num_blocks << std::endl;
     gettimeofday(&start, NULL);
     //super_kernel<<</*192*15*/512*32, 512/*64*/>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
     //super_kernel<<<16384, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
@@ -1063,6 +1131,7 @@ extern "C" void mergeSort(
     std::cerr << "super_kernel+event submitted " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
     gettimeofday(&start, NULL);
+    l_h2d_flag=1;
     k_err = cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
     if(k_err != cudaSuccess){
        std::cerr << "cudaMemcpy failed with error " << k_err << std::endl;}
@@ -1077,13 +1146,22 @@ extern "C" void mergeSort(
     std::cerr << "super_kernel completed " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
     
     gettimeofday(&start, NULL);
-    checkCudaErrors(cudaMemcpy(h_key2, ikey, N*sizeof(uint), cudaMemcpyDeviceToHost));
-    checkCudaErrors(cudaMemcpy(h_val2, ival, N*sizeof(uint), cudaMemcpyDeviceToHost));
+    //checkCudaErrors(cudaMemcpy(h_key2, ikey, N*sizeof(uint), cudaMemcpyDeviceToHost));
+    //checkCudaErrors(cudaMemcpy(h_val2, ival, N*sizeof(uint), cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaMemset(ikey, 0, N*sizeof(uint)));
     checkCudaErrors(cudaMemset(ival, 0, N*sizeof(uint)));
     gettimeofday(&end, NULL);
-    std::cerr << "D2D+Memset " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+    std::cerr << "Zero memory " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
+    gettimeofday(&start, NULL);
+    l_h2d_flag=0;
+    k_err = cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
+    if(k_err != cudaSuccess){
+       std::cerr << "cudaMemcpy failed with error " << k_err << std::endl;}
+    gettimeofday(&end, NULL);
+    std::cerr << "H2D Flag reset " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
+
+#if 0
     gettimeofday(&start, NULL);
     for(int i=0; i<N; i++){
         if(h_key1[i]!=h_key2[i]){
@@ -1095,8 +1173,8 @@ extern "C" void mergeSort(
     }
     gettimeofday(&end, NULL);
     std::cerr << "Validation " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
-
-    mergeSortShared(ikey, ival, d_SrcKey, d_SrcVal, N / SHARED_SIZE_LIMIT, SHARED_SIZE_LIMIT, sortDir);
+#endif
+    //mergeSortShared(ikey, ival, d_SrcKey, d_SrcVal, N / SHARED_SIZE_LIMIT, SHARED_SIZE_LIMIT, sortDir);
 
     gettimeofday(&start, NULL);
     super_kernel_elastic_blockDim<<<60, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
@@ -1107,6 +1185,7 @@ extern "C" void mergeSort(
     std::cerr << "super_kernel_elastic_blockDim+event submitted " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
 
     gettimeofday(&start, NULL);
+    l_h2d_flag=1;
     k_err = cudaMemcpy(d_cm_flag, &l_h2d_flag, sizeof(uint), cudaMemcpyHostToDevice);
     if(k_err != cudaSuccess){
        std::cerr << "cudaMemcpy failed with error " << k_err << std::endl;}
@@ -1119,8 +1198,8 @@ extern "C" void mergeSort(
       std::cerr << "cudaEventSynchronize failed with error " << k_err << std::endl;}
     gettimeofday(&end, NULL);
     std::cerr << "super_kernel_elastic_blockDim completed " << (end.tv_sec - start.tv_sec)*1000000 + (end.tv_usec - start.tv_usec) << std::endl;
-    
-#if 1
+#endif
+#if 0
     for (uint stride = SHARED_SIZE_LIMIT; stride < N; stride <<= 1)
     {
         uint lastSegmentElements = N % (2 * stride);

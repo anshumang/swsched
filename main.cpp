@@ -43,20 +43,20 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }*/
 
-    printf("Allocating and initializing host arrays...\n\n");
+    /*printf("Allocating and initializing host arrays...\n\n");
     h_SrcKey = (uint *)malloc(N * sizeof(uint));
     h_SrcVal = (uint *)malloc(N * sizeof(uint));
     h_DstKey = (uint *)malloc(N * sizeof(uint));
     h_DstVal = (uint *)malloc(N * sizeof(uint));
-
-    srand(2009);
+    */
+    /*srand(2009);
 
     for (uint i = 0; i < N; i++)
     {
         h_SrcKey[i] = rand() % numValues;
     }
 
-    fillValues(h_SrcVal, N);
+    fillValues(h_SrcVal, N);*/
 
     printf("Allocating and initializing CUDA arrays...\n\n");
     checkCudaErrors(cudaMalloc((void **)&d_DstKey, N * sizeof(uint)));
@@ -65,8 +65,8 @@ int main(int argc, char **argv)
     checkCudaErrors(cudaMalloc((void **)&d_BufVal, N * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&d_SrcKey, N * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&d_SrcVal, N * sizeof(uint)));
-    checkCudaErrors(cudaMemcpy(d_SrcKey, h_SrcKey, N * sizeof(uint), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_SrcVal, h_SrcVal, N * sizeof(uint), cudaMemcpyHostToDevice));
+    //checkCudaErrors(cudaMemcpy(d_SrcKey, h_SrcKey, N * sizeof(uint), cudaMemcpyHostToDevice));
+    //checkCudaErrors(cudaMemcpy(d_SrcVal, h_SrcVal, N * sizeof(uint), cudaMemcpyHostToDevice));
 
     printf("Initializing GPU merge sort...\n");
     initMergeSort();
