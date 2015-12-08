@@ -215,6 +215,9 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion(
        extra_iter=1;
     }
     size_t new_block_idx_x = blockIdx.x + num_iter*60 + extra_iter;
+    if((num_iter%100==0)&&(threadIdx.x==0)){
+      printf("%d %d\n", num_iter, blockIdx.x + num_iter*60 + extra_iter);
+    }
     //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
@@ -284,7 +287,7 @@ __global__ void super_kernel(
      {
         asm("mov.u32 %0, %%smid;" : "=r"(smidx));
         asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
-        l_timestamp = clock64();
+        //l_timestamp = clock64();
         /*if(blockIdx.x%60==0)
         {
           printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
@@ -298,7 +301,7 @@ __global__ void super_kernel(
       }
      __syncthreads();
      __shared__ bool s_grid_done;
-     int iter=4369/*273*/, iter_completed=0;
+     int iter=4370/*273*/, iter_completed=0;
     while(iter_completed<4370/*273*/){
      if(iter_completed==4369){
          if(blockIdx.x>=4){ /*4 blocks remaining, so use block indices 0-3, that is, choose 1 block each from 4 SMs (ALTERNATIVE : choose all 4 block indices from 1 SM)*/
@@ -377,7 +380,7 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_bloc
     //__shared__ uint s_key[SHARED_SIZE_LIMIT];
     //__shared__ uint s_val[SHARED_SIZE_LIMIT];
 
-    uint new_shared_size_limit = SHARED_SIZE_LIMIT/4;
+    const uint new_shared_size_limit = SHARED_SIZE_LIMIT/4;
     __shared__ uint s_key[new_shared_size_limit];
     __shared__ uint s_val[new_shared_size_limit];
 
@@ -390,11 +393,14 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_bloc
     //To use the 5th block, some application kernel blocks will span across multiple SMs
     //adds complexity for syncthreads
     //so the 5th block on each SM is left unused
-    if(blockIdx.x>=60){
+    /*if(blockIdx.x>=60){
 	    return;
-    }
-    size_t new_block_idx_x = blockIdx.x%15 + num_iter*15 + extra_iter;
-    size_t new_thread_idx_x = threadIdx.x + blockDim.x*factor; //when supervisor block smaller than app block
+    }*/
+    size_t new_block_idx_x = blockIdx.x%60 + num_iter*60 + extra_iter;
+    size_t new_thread_idx_x = threadIdx.x /*+ blockDim.x*factor*/; //when supervisor block smaller than app block
+    /*if((num_iter%100==0)&&(threadIdx.x==0)){
+      printf("%d %d\n", num_iter, new_block_idx_x);
+    }*/
     //threadIdx.x%factor; // when app block smaller than supervisor block  
     //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
@@ -485,10 +491,10 @@ __global__ void super_kernel_elastic_blockDim(
       }
      __syncthreads();
      __shared__ bool s_grid_done;
-     int iter=17477/*273*/, iter_completed=0;
-    while(iter_completed<17477/*273*/){
-     if(iter_completed==17476){
-         if(blockIdx.x>=49){ /*4 application kernel blocks left, so 16 super kernel blocks or 4 SMs each with 4 blocks, RR assignment, 15 SMs need to be assigned 3 each and 4 SMs need to be assigned 1 more each*/
+     int iter=4370/*273*/, iter_completed=0;
+    while(iter_completed<4370/*273*/){
+     if(iter_completed==4369){
+         if(blockIdx.x>=16){ /*4 application kernel blocks left, so 16 super kernel blocks or 4 SMs each with 4 blocks, RR assignment, 15 SMs need to be assigned 3 each and 4 SMs need to be assigned 1 more each*/
             break;
          }
          //if(threadIdx.x==0){
@@ -510,9 +516,9 @@ __global__ void super_kernel_elastic_blockDim(
      }
      __syncthreads();
      if(iter_completed<4369){
-     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, false, blockIdx.x/15);
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, false, blockIdx.x/60);
      }else{
-     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, true, blockIdx.x/15);
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, true, blockIdx.x/60);
      }
      __syncthreads();
      //if(threadIdx.x==0)
@@ -1076,7 +1082,7 @@ extern "C" void mergeSort(
     }
     std::cerr << out_zero_keys << " " << out_non_zero_keys << " " << out_zero_vals << " " << out_non_zero_vals << std::endl;
 #endif
-#if 0
+#if 1
     cudaError_t k_err;
     int num_blocks=0;
     k_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks, super_kernel, 512, 0); 
@@ -1177,7 +1183,7 @@ extern "C" void mergeSort(
     //mergeSortShared(ikey, ival, d_SrcKey, d_SrcVal, N / SHARED_SIZE_LIMIT, SHARED_SIZE_LIMIT, sortDir);
 
     gettimeofday(&start, NULL);
-    super_kernel_elastic_blockDim<<<60, 512, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
+    super_kernel_elastic_blockDim<<<240, 128, 0, k_strm>>>(d_cm_flag, ikey, ival, d_SrcKey, d_SrcVal, SHARED_SIZE_LIMIT);
     k_err = cudaEventRecord(k_ev, k_strm);
     if(k_err != cudaSuccess){
       std::cerr << "cudaEventRecord failed with error " << k_err << std::endl;}
