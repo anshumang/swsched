@@ -203,231 +203,37 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion(
     uint *d_SrcKey,
     uint *d_SrcVal,
     uint arrayLength,
-    uint num_iter,
-    bool partial_dispatch
+    size_t block_idx_x,
+    uint thread_idx_x
 )
 {
     __shared__ uint s_key[SHARED_SIZE_LIMIT];
     __shared__ uint s_val[SHARED_SIZE_LIMIT];
 
-    uint extra_iter=0;
-    if(partial_dispatch){
-       extra_iter=1;
-    }
-    size_t new_block_idx_x = blockIdx.x + num_iter*60 + extra_iter;
-    if((num_iter%100==0)&&(threadIdx.x==0)){
-      printf("%d %d\n", num_iter, blockIdx.x + num_iter*60 + extra_iter);
-    }
     //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
     //d_DstVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_SrcKey += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_SrcVal += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_DstKey += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_DstVal += new_block_idx_x * SHARED_SIZE_LIMIT + threadIdx.x;
-    s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
-    s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
-    s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
-    s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
-
-    for (uint stride = 1; stride < arrayLength; stride <<= 1)
-    {
-        uint     lPos = threadIdx.x & (stride - 1);
-        uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
-        uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
-
-        __syncthreads();
-        uint keyA = baseKey[lPos +      0];
-        uint valA = baseVal[lPos +      0];
-        uint keyB = baseKey[lPos + stride];
-        uint valB = baseVal[lPos + stride];
-        uint posA = binarySearchExclusive<sortDir>(keyA, baseKey + stride, stride, stride) + lPos;
-        uint posB = binarySearchInclusive<sortDir>(keyB, baseKey +      0, stride, stride) + lPos;
-
-        __syncthreads();
-        baseKey[posA] = keyA;
-        baseVal[posA] = valA;
-        baseKey[posB] = keyB;
-        baseVal[posB] = valB;
-    }
-
-    __syncthreads();
-    d_DstKey[                      0] = s_key[threadIdx.x +                       0];
-    d_DstVal[                      0] = s_val[threadIdx.x +                       0];
-    d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
-    d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
-}
-
-__device__ uint d_d2h_flag=0;
-__device__ uint d_num_blocks_completed=0;
-__device__ uint d_num_blocks_started=0;
-__device__ uint d_h2d_flag=0;
-__device__ long d_grid_size=60;
-
-__global__ void super_kernel(
-    uint *d_cm_flag,
-    uint *d_DstKey,
-    uint *d_DstVal,
-    uint *d_SrcKey,
-    uint *d_SrcVal,
-    uint arrayLength)
-{
-     long long int l_timestamp = 0;
-     unsigned int smidx, warpidx;
-     /*if((blockIdx.x==0)||(blockIdx.x==15)||(blockIdx.x==30)||(blockIdx.x==45)||(blockIdx.x==60))
-     {
-       asm("mov.u32 %0, %%smid;" : "=r"(smidx));
-       asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
-       l_timestamp = clock64();
-       //printf("%d %d %d %d %ld\n",smidx, warpidx, gridDim.x, blockDim.x, l_timestamp);
-       printf("%d %d %d %d %d %d %ld\n",threadIdx.x, blockIdx.x, smidx, warpidx, gridDim.x, blockDim.x, l_timestamp);
-     }*/
-     if(threadIdx.x==0)
-     {
-        asm("mov.u32 %0, %%smid;" : "=r"(smidx));
-        asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
-        //l_timestamp = clock64();
-        /*if(blockIdx.x%60==0)
-        {
-          printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
-        }*/
-        uint l_h2d_flag=0;
-        do
-        {
-           l_h2d_flag = *d_cm_flag;
-           __threadfence_system();
-        }while(l_h2d_flag==0);
-      }
-     __syncthreads();
-     __shared__ bool s_grid_done;
-     int iter=4370/*273*/, iter_completed=0;
-    while(iter_completed<4370/*273*/){
-     if(iter_completed==4369){
-         if(blockIdx.x>=4){ /*4 blocks remaining, so use block indices 0-3, that is, choose 1 block each from 4 SMs (ALTERNATIVE : choose all 4 block indices from 1 SM)*/
-            break;
-         }
-         //if(threadIdx.x==0){
-         //printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
-     }
-     if(threadIdx.x==0)
-     {
-	s_grid_done=false;
-        //if(blockIdx.x%60==0)
-        //{
-          //printf("start %d %d %d %ld %ld\n", blockIdx.x, smidx, warpidx, l_timestamp, clock64());
-        //}
-        //if(d_num_blocks_started == 0)
-        //if(/*(blockIdx.x==0)&&*/(iter_completed==0))
-        //{
-            //printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
-        //}
-        atomicAdd(&d_num_blocks_started, 1);
-     }
-     __syncthreads();
-     if(iter_completed<4369){
-     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed,false);
-     }else{
-     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed,true);
-     }
-     __syncthreads();
-     //if(threadIdx.x==0)
-     //{
-        //l_timestamp = clock64();
-        //printf("end %d %d %ld\n", r, blockIdx.x, l_timestamp);
-     //}
-     iter_completed++;
-     if(threadIdx.x==0)
-     {
-         atomicAdd(&d_num_blocks_completed, 1);
-         //if(d_num_blocks_completed==gridDim.x)
-         //if(d_num_blocks_completed==d_grid_size)
-         //if(iter_completed==273)
-         if((blockIdx.x==0)&&(iter_completed==4369/*273*/))
-         {
-             s_grid_done=true;
-             //printf("end %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
-         }
-     }
-     __syncthreads();
-     /*if(s_grid_done==true){
-       break;
-     }*/
-    }
-     /*if((threadIdx.x==0)&&(blockIdx.x==0))
-     {
-         int l_num_blocks_completed;
-         do
-         {
-           l_num_blocks_completed = atomicCAS(&d_num_blocks_completed, gridDim.x-1 ,0);
-         }while(l_num_blocks_completed!=gridDim.x-1);
-         atomicExch(&d_d2h_flag, 1);
-         printf("%ld \n", clock64());
-     }*/
-}
-
-template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_blockDim(
-    uint *d_DstKey,
-    uint *d_DstVal,
-    uint *d_SrcKey,
-    uint *d_SrcVal,
-    uint arrayLength,
-    uint num_iter,
-    bool partial_dispatch,
-    uint factor
-)
-{
-    //__shared__ uint s_key[SHARED_SIZE_LIMIT];
-    //__shared__ uint s_val[SHARED_SIZE_LIMIT];
-
-    const uint new_shared_size_limit = SHARED_SIZE_LIMIT/4;
-    __shared__ uint s_key[new_shared_size_limit];
-    __shared__ uint s_val[new_shared_size_limit];
-
-    uint extra_iter=0;
-    if(partial_dispatch){
-       extra_iter=1;
-    }
-    //blockIdx.x%15 => super kernel blocks 0, 15, 30, 45, 60 - all belong to the same application kernel block
-    //but only need 4 super kernel blocks for this application kernel
-    //To use the 5th block, some application kernel blocks will span across multiple SMs
-    //adds complexity for syncthreads
-    //so the 5th block on each SM is left unused
-    /*if(blockIdx.x>=60){
-	    return;
-    }*/
-    size_t new_block_idx_x = blockIdx.x%60 + num_iter*60 + extra_iter;
-    size_t new_thread_idx_x = threadIdx.x /*+ blockDim.x*factor*/; //when supervisor block smaller than app block
-    /*if((num_iter%100==0)&&(threadIdx.x==0)){
-      printf("%d %d\n", num_iter, new_block_idx_x);
-    }*/
-    //threadIdx.x%factor; // when app block smaller than supervisor block  
-    //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    //d_DstVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
-    d_SrcKey += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
-    d_SrcVal += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
-    d_DstKey += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
-    d_DstVal += new_block_idx_x * new_shared_size_limit + new_thread_idx_x;
+    d_SrcKey += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_SrcVal += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_DstKey += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_DstVal += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
     //s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
     //s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
     //s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
     //s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
-
-    s_key[new_thread_idx_x +                       0] = d_SrcKey[                      0];
-    s_val[new_thread_idx_x +                       0] = d_SrcVal[                      0];
-    s_key[new_thread_idx_x + (new_shared_size_limit / 2)] = d_SrcKey[(new_shared_size_limit / 2)];
-    s_val[new_thread_idx_x + (new_shared_size_limit / 2)] = d_SrcVal[(new_shared_size_limit / 2)];
-
+    s_key[thread_idx_x +                       0] = d_SrcKey[                      0];
+    s_val[thread_idx_x +                       0] = d_SrcVal[                      0];
+    s_key[thread_idx_x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
+    s_val[thread_idx_x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
     for (uint stride = 1; stride < arrayLength; stride <<= 1)
     {
         //uint     lPos = threadIdx.x & (stride - 1);
         //uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
         //uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
-        uint     lPos = new_thread_idx_x & (stride - 1);
-        uint *baseKey = s_key + 2 * (new_thread_idx_x - lPos);
-        uint *baseVal = s_val + 2 * (new_thread_idx_x - lPos);
+        uint     lPos = thread_idx_x & (stride - 1);
+        uint *baseKey = s_key + 2 * (thread_idx_x - lPos);
+        uint *baseVal = s_val + 2 * (thread_idx_x - lPos);
 
         __syncthreads();
         uint keyA = baseKey[lPos +      0];
@@ -449,10 +255,182 @@ template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_bloc
     //d_DstVal[                      0] = s_val[threadIdx.x +                       0];
     //d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
     //d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
-    d_DstKey[                      0] = s_key[new_thread_idx_x +                       0];
-    d_DstVal[                      0] = s_val[new_thread_idx_x +                       0];
-    d_DstKey[(new_shared_size_limit / 2)] = s_key[new_thread_idx_x + (new_shared_size_limit / 2)];
-    d_DstVal[(new_shared_size_limit / 2)] = s_val[new_thread_idx_x + (new_shared_size_limit / 2)];
+    d_DstKey[                      0] = s_key[thread_idx_x +                       0];
+    d_DstVal[                      0] = s_val[thread_idx_x +                       0];
+    d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[thread_idx_x + (SHARED_SIZE_LIMIT / 2)];
+    d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[thread_idx_x + (SHARED_SIZE_LIMIT / 2)];
+}
+
+__device__ uint d_d2h_flag=0;
+__device__ uint d_num_blocks_completed=0;
+__device__ uint d_num_blocks_started=0;
+__device__ uint d_h2d_flag=0;
+__device__ long d_grid_size=60;
+
+__global__ void super_kernel(
+    uint *d_cm_flag,
+    uint *d_DstKey,
+    uint *d_DstVal,
+    uint *d_SrcKey,
+    uint *d_SrcVal,
+    uint arrayLength)
+{
+     long long int l_timestamp = 0;
+     unsigned int smidx, warpidx;
+     if(threadIdx.x==0)
+     {
+        asm("mov.u32 %0, %%smid;" : "=r"(smidx));
+        asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
+     }
+        /*if(blockIdx.x%60==0)
+        {
+          printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
+        }*/
+     if(threadIdx.x==0)
+     {
+        uint l_h2d_flag=0;
+        do
+        {
+           l_h2d_flag = *d_cm_flag;
+           __threadfence_system();
+        }while(l_h2d_flag==0);
+      }
+     __syncthreads();
+     if(threadIdx.x==0)
+     {
+        l_timestamp = clock64();
+     }
+     //__shared__ bool s_grid_done;
+     int iter_completed=0;
+    while(iter_completed<4370){
+     if(iter_completed==4369){
+         if(blockIdx.x>=4){ /*4 blocks remaining, so use block indices 0-3, that is, choose 1 block each from 4 SMs (ALTERNATIVE : choose all 4 block indices from 1 SM)*/
+            break;
+         }
+	 //printf("%d %d %d\n", blockIdx.x, blockIdx.x + iter_completed*60, threadIdx.x);
+         //if(threadIdx.x==0){
+         //printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
+     }
+     if(threadIdx.x==0)
+     {
+        //if(blockIdx.x%60==0)
+        //{
+          //printf("start %d %d %d %ld %ld\n", blockIdx.x, smidx, warpidx, l_timestamp, clock64());
+        //}
+        //if(d_num_blocks_started == 0)
+        //if(/*(blockIdx.x==0)&&*/(iter_completed==0))
+        //{
+            //printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
+        //}
+        l_timestamp = clock64();
+        atomicAdd(&d_num_blocks_started, 1);
+     }
+     __syncthreads();
+     mergeSortSharedKernel_minion<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, blockIdx.x + iter_completed*60, threadIdx.x);
+     __syncthreads();
+     //if(threadIdx.x==0)
+     //{
+        //l_timestamp = clock64();
+        //printf("end %d %d %ld\n", r, blockIdx.x, l_timestamp);
+     //}
+     iter_completed++;
+     if(threadIdx.x==0)
+     {
+         atomicAdd(&d_num_blocks_completed, 1);
+	 l_timestamp = clock64();
+         //if(d_num_blocks_completed==gridDim.x)
+         //if(d_num_blocks_completed==d_grid_size)
+         //if(iter_completed==273)
+     }
+     //__syncthreads();
+    }
+     /*if((threadIdx.x==0)&&(blockIdx.x==0))
+     {
+         int l_num_blocks_completed;
+         do
+         {
+           l_num_blocks_completed = atomicCAS(&d_num_blocks_completed, gridDim.x-1 ,0);
+         }while(l_num_blocks_completed!=gridDim.x-1);
+         atomicExch(&d_d2h_flag, 1);
+         printf("%ld \n", clock64());
+     }*/
+}
+
+__device__ uint s_key[SHARED_SIZE_LIMIT];
+__device__ uint s_val[SHARED_SIZE_LIMIT];
+template<uint sortDir> __device__ void mergeSortSharedKernel_minion_elastic_blockDim(
+    uint *d_DstKey,
+    uint *d_DstVal,
+    uint *d_SrcKey,
+    uint *d_SrcVal,
+    uint arrayLength,
+    size_t block_idx_x,
+    uint thread_idx_x
+)
+{
+    //__shared__ uint s_key[SHARED_SIZE_LIMIT];
+    //__shared__ uint s_val[SHARED_SIZE_LIMIT];
+    //const uint new_shared_size_limit = SHARED_SIZE_LIMIT/4;
+    //__shared__ uint s_key[new_shared_size_limit];
+    //__shared__ uint s_val[new_shared_size_limit];
+
+    //d_SrcKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    //d_SrcVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    //d_DstKey += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    //d_DstVal += blockIdx.x * SHARED_SIZE_LIMIT + threadIdx.x;
+    /*if(block_idx_x>=262144){
+	    printf("%d %d\n", block_idx_x, thread_idx_x);
+    }*/
+    d_SrcKey += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_SrcVal += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_DstKey += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    d_DstVal += block_idx_x * SHARED_SIZE_LIMIT + thread_idx_x;
+    //s_key[threadIdx.x +                       0] = d_SrcKey[                      0];
+    //s_val[threadIdx.x +                       0] = d_SrcVal[                      0];
+    //s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcKey[(SHARED_SIZE_LIMIT / 2)];
+    //s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)] = d_SrcVal[(SHARED_SIZE_LIMIT / 2)];
+
+    s_key[thread_idx_x +                       0] = d_SrcKey[                      0];
+    s_val[thread_idx_x +                       0] = d_SrcVal[                      0];
+    s_key[thread_idx_x + (SHARED_SIZE_LIMIT/ 2)] = d_SrcKey[(SHARED_SIZE_LIMIT/ 2)];
+    s_val[thread_idx_x + (SHARED_SIZE_LIMIT/ 2)] = d_SrcVal[(SHARED_SIZE_LIMIT/ 2)];
+
+#if 1
+    for (uint stride = 1; stride < arrayLength; stride <<= 1)
+    {
+        //uint     lPos = threadIdx.x & (stride - 1);
+        //uint *baseKey = s_key + 2 * (threadIdx.x - lPos);
+        //uint *baseVal = s_val + 2 * (threadIdx.x - lPos);
+        uint     lPos = thread_idx_x & (stride - 1);
+        uint *baseKey = s_key + 2 * (thread_idx_x - lPos);
+        uint *baseVal = s_val + 2 * (thread_idx_x - lPos);
+
+        __syncthreads();
+        uint keyA = baseKey[lPos +      0];
+        uint valA = baseVal[lPos +      0];
+        uint keyB = baseKey[lPos + stride];
+        uint valB = baseVal[lPos + stride];
+        uint posA = binarySearchExclusive<sortDir>(keyA, baseKey + stride, stride, stride) + lPos;
+        uint posB = binarySearchInclusive<sortDir>(keyB, baseKey +      0, stride, stride) + lPos;
+
+        __syncthreads();
+        baseKey[posA] = keyA;
+        baseVal[posA] = valA;
+        baseKey[posB] = keyB;
+        baseVal[posB] = valB;
+    }
+#endif
+
+
+    __syncthreads();
+    //d_DstKey[                      0] = s_key[threadIdx.x +                       0];
+    //d_DstVal[                      0] = s_val[threadIdx.x +                       0];
+    //d_DstKey[(SHARED_SIZE_LIMIT / 2)] = s_key[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    //d_DstVal[(SHARED_SIZE_LIMIT / 2)] = s_val[threadIdx.x + (SHARED_SIZE_LIMIT / 2)];
+    d_DstKey[                      0] = s_key[thread_idx_x +                       0];
+    d_DstVal[                      0] = s_val[thread_idx_x +                       0];
+    d_DstKey[(SHARED_SIZE_LIMIT/ 2)] = s_key[thread_idx_x + (SHARED_SIZE_LIMIT/ 2)];
+    d_DstVal[(SHARED_SIZE_LIMIT/ 2)] = s_val[thread_idx_x + (SHARED_SIZE_LIMIT/ 2)];
 }
 
 __global__ void super_kernel_elastic_blockDim(
@@ -477,11 +455,14 @@ __global__ void super_kernel_elastic_blockDim(
      {
         asm("mov.u32 %0, %%smid;" : "=r"(smidx));
         asm("mov.u32 %0, %%warpid;" : "=r"(warpidx));
+     }
         //l_timestamp = clock64();
         /*if(blockIdx.x%60==0)
         {
           printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, l_timestamp);
         }*/
+     if(threadIdx.x==0)
+     {
         uint l_h2d_flag=0;
         do
         {
@@ -490,19 +471,31 @@ __global__ void super_kernel_elastic_blockDim(
         }while(l_h2d_flag==0);
       }
      __syncthreads();
-     __shared__ bool s_grid_done;
-     int iter=4370/*273*/, iter_completed=0;
-    while(iter_completed<4370/*273*/){
+     int iter_completed=0;
+    while(iter_completed<4370){
+	    //if((threadIdx.x==0)&&(blockIdx.x==gridDim.x-1)){
+	      //printf("%d %d\n", iter_completed, (blockIdx.x%60)+(iter_completed*60));
+	    //}
+     //if(iter_completed==1){
+	    /*if(threadIdx.x==0){
+               printf("%d %d\n", blockIdx.x, blockIdx.x%60 + iter_completed*60);
+	    }*/
+	    /*if(blockIdx.x%60==0){
+               printf("%d %d %d\n", blockIdx.x, threadIdx.x, threadIdx.x + (blockDim.x*blockIdx.x/60));
+	    }*/
+     //}
      if(iter_completed==4369){
-         if(blockIdx.x>=16){ /*4 application kernel blocks left, so 16 super kernel blocks or 4 SMs each with 4 blocks, RR assignment, 15 SMs need to be assigned 3 each and 4 SMs need to be assigned 1 more each*/
+         if(blockIdx.x%15!=0){ /*4 application kernel blocks left, so 16 super kernel blocks needed */
             break;
          }
+	 //if(blockIdx.x<60){
+	 //printf("%d %d %d %d\n", blockIdx.x, (blockIdx.x/60) + (iter_completed*60), threadIdx.x, threadIdx.x + (blockDim.x*blockIdx.x/15));
+	 //}
          //if(threadIdx.x==0){
          //printf("extra dispatch %d %d\n", blockIdx.x, smidx);}
      }
      if(threadIdx.x==0)
      {
-	s_grid_done=false;
         //if(blockIdx.x%60==0)
         //{
           //printf("start %d %d %d %ld %ld\n", blockIdx.x, smidx, warpidx, l_timestamp, clock64());
@@ -512,13 +505,15 @@ __global__ void super_kernel_elastic_blockDim(
         {
             printf("start %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
         }*/
+        l_timestamp = clock64();
         atomicAdd(&d_num_blocks_started, 1);
      }
      __syncthreads();
      if(iter_completed<4369){
-     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, false, blockIdx.x/60);
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, blockIdx.x%60 + iter_completed*60, (threadIdx.x) + ((blockDim.x)*((blockIdx.x)/60)));
+     //printf("%d %d %d %d\n", blockIdx.x, blockIdx.x%60 + iter_completed*60, threadIdx.x, threadIdx.x + (blockDim.x*blockIdx.x/60));
      }else{
-     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, iter_completed, true, blockIdx.x/60);
+     mergeSortSharedKernel_minion_elastic_blockDim<1>(d_DstKey, d_DstVal, d_SrcKey, d_SrcVal, arrayLength, blockIdx.x/60 + iter_completed*60, (threadIdx.x) + ((blockDim.x)*((blockIdx.x)/15)));
      }
      __syncthreads();
      //if(threadIdx.x==0)
@@ -530,19 +525,12 @@ __global__ void super_kernel_elastic_blockDim(
      if(threadIdx.x==0)
      {
          atomicAdd(&d_num_blocks_completed, 1);
+	 l_timestamp = clock64();
          //if(d_num_blocks_completed==gridDim.x)
          //if(d_num_blocks_completed==d_grid_size)
          //if(iter_completed==273)
-         if((blockIdx.x==0)&&(iter_completed==4369/*273*/))
-         {
-             s_grid_done=true;
-             //printf("end %d %d %d %ld\n", blockIdx.x, smidx, warpidx, clock64());
-         }
      }
-     __syncthreads();
-     /*if(s_grid_done==true){
-       break;
-     }*/
+     //__syncthreads();
     }
      /*if((threadIdx.x==0)&&(blockIdx.x==0))
      {
